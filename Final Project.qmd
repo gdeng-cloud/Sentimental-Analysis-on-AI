@@ -1,0 +1,203 @@
+---
+title: "Final Project: Sentiment Analysis of News related to AI"
+format: html
+---
+
+```{python}
+import requests
+import pandas as pd
+import time
+
+key_words = ['artificial intelligence', 'AI', 'Grok', 'Gemini', 'Claude', 'ChatGPT', 'LLM', 'Large Language Models', 'Deep Learning', 'Neural Networks', 'OpenAI', 'Google AI', 'Anthropic', 'Microsoft AI', 'Meta AI', 'AI Ethics', 'AI Safety', 'AI Regulation']
+
+my_api_key = '959a4ae70e1041029f9fcfb74ccb13e0'
+
+news_data = []
+
+for word in key_words:
+    time.sleep(1)
+    query = f'https://newsapi.org/v2/everything?q={word}&language=en&sortBy=publishedAt&pageSize=100&apiKey={my_api_key}'
+    re = requests.get(query)
+    raw_json = re.json()
+    articles = raw_json['articles']
+
+    for article in articles:
+        news_data.append([
+            article['publishedAt'],
+            word,
+            article['source']['name'],
+            article['title'],
+            article['description']
+        ])
+
+news_df = pd.DataFrame(news_data, columns=['Date', 'Keyword', 'Source', 'Title', 'Description'])
+
+news_df['Date'] = pd.to_datetime(news_df['Date'])
+news_df = news_df.sort_values('Date')
+
+news_df
+```
+
+```{python}
+news_df['text'] = (news_df['Title'].fillna('') + ' ' + news_df['Description'].fillna(''))
+
+news_df[['Date', 'Keyword', 'text']].head(10)
+``` 
+
+```{python}
+import re
+
+def clean_text(x):
+    x = str(x).lower()
+    x = re.sub(r'http\S+', '', x)
+    x = re.sub(r'[^a-z\s]', '', x)
+    x = re.sub(r'\s+', ' ', x).strip()
+    return x
+
+news_df['text_clean'] = news_df['text'].apply(clean_text)
+
+news_df[['text', 'text_clean']].head(10)
+``` 
+
+```{python}
+from textblob import TextBlob
+
+news_df['polarity'] = news_df['text_clean'].apply(lambda x: TextBlob(x).sentiment.polarity)
+
+news_df[['Keyword', 'polarity']].head(10)
+```
+
+```{python}
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+vader = SentimentIntensityAnalyzer()
+
+news_df['sentiment'] = news_df['text_clean'].apply(lambda x: vader.polarity_scores(x).get('compound'))
+
+news_df[['Keyword', 'sentiment']].head(10)
+``` 
+
+```{python}
+import gensim
+from gensim import corpora
+``` 
+
+```{python}
+def token_simple(x):
+    return re.findall(r'[a-z]{2,}', str(x).lower())
+
+tokens = news_df['text_clean'].apply(token_simple).tolist()
+
+tokens[:2]
+```
+
+```{python}
+id2word = corpora.Dictionary(tokens)
+
+len(id2word)
+
+corpus = [id2word.doc2bow(text) for text in tokens]
+
+len(corpus)
+```
+
+```{python}
+lda_model = gensim.models.ldamodel.LdaModel(
+    corpus=corpus,
+    id2word=id2word,
+    num_topics=6,
+    random_state=100,
+    passes=10
+)
+
+for i in range(6):
+    print("\nTopic {}:".format(i))
+    print(lda_model.print_topic(i, topn=10))
+
+
+topic_assign = []
+
+for doc in corpus:
+    dist = lda_model.get_document_topics(doc, minimum_probability=0.0)
+    top_topic = max(dist, key=lambda x: x[1])[0]
+    topic_assign.append(top_topic)
+
+news_df['topic_id'] = topic_assign
+
+news_df[['Keyword', 'topic_id']].head()
+```
+
+```{python}
+topic_summary = (news_df.groupby('topic_id').agg(avg_sent=('sentiment','mean'),
+                 n_articles=('sentiment','size')).reset_index())
+
+topic_summary
+```
+
+```{python}
+topic_sentiment = news_df.groupby('topic_id')['sentiment'].mean().reset_index()
+
+topic_sentiment
+```
+
+```{python}
+news_df[['polarity', 'sentiment']].corr()
+```
+
+```{python}
+from plotnine import *
+
+g_1 = (ggplot(news_df, aes(x='sentiment')) +
+       geom_histogram(bins=20) +
+       labs(title='Sentiment Distribution of AI News',
+            x='Compound Sentiment',
+            y='Count'))
+
+g_1
+``` 
+
+```{python}
+daily_sentiment = news_df.groupby('Date')['sentiment'].mean().reset_index()
+
+g_2 = (ggplot(daily_sentiment, aes(x='Date', y='sentiment')) +
+       geom_line() +
+       labs(title='Average Daily Sentiment on AI News',
+            x='Date',
+            y='Average Sentiment'))
+
+g_2
+```
+
+```{python}
+keyword_sentiment = news_df.groupby('Keyword')['sentiment'].mean().reset_index()
+
+g_3 = (ggplot(keyword_sentiment, aes(x='Keyword', y='sentiment')) +
+       geom_bar(stat='identity') +
+       labs(title='Average Sentiment by Keyword',
+            x='Keyword',
+            y='Average Sentiment') +
+       theme(axis_text_x=element_text(rotation=45, hjust=1)))
+
+g_3
+```
+
+```{python}
+g_4 = (ggplot(news_df, aes(x='polarity', y='sentiment')) +
+       geom_point(alpha=0.4) +
+       geom_smooth(method='lm') +
+       labs(title='TextBlob vs VADER Sentiment',
+            x='TextBlob',
+            y='VADER'))
+
+g_4
+```
+
+```{python}
+g_5 = (ggplot(topic_sentiment, aes(x='factor(topic_id)', y='sentiment')) +
+       geom_col() +
+       labs(title='Average Sentiment by Topic',
+            x='Topic ID',
+            y='Average VADER Sentiment'))
+
+g_5
+```
